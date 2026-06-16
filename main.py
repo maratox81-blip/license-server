@@ -24,6 +24,10 @@ from pydantic import BaseModel
 DB_PATH = Path(__file__).parent / "licenses.db"
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
+# Fallback: if running from /opt/render/project/src
+if not TEMPLATES_DIR.exists():
+    TEMPLATES_DIR = Path("/opt/render/project/src/templates")
+
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "changeme")
 
 # Простые сессии: token → True (хранятся в памяти сервера)
@@ -140,10 +144,9 @@ def require_admin(authorization: str = Header(default=None)):
 def login_page(request: Request, error: str = ""):
     if is_authenticated(request):
         return RedirectResponse("/dashboard", status_code=302)
-    return templates.TemplateResponse("login.html", {
-        "request": request,
-        "error": error
-    })
+    return templates.TemplateResponse(
+        request=request, name="login.html", context={"error": error}
+    )
 
 
 @app.post("/login", response_class=HTMLResponse, include_in_schema=False)
@@ -154,10 +157,9 @@ def login_submit(request: Request, response: Response, password: str = Form(...)
         resp = RedirectResponse("/dashboard", status_code=302)
         resp.set_cookie("session", token, httponly=True, max_age=86400)
         return resp
-    return templates.TemplateResponse("login.html", {
-        "request": request,
-        "error": "Неверный пароль"
-    })
+    return templates.TemplateResponse(
+        request=request, name="login.html", context={"error": "Incorrect password"}
+    )
 
 
 @app.get("/logout", include_in_schema=False)
@@ -171,22 +173,16 @@ def logout(request: Request):
 
 
 @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-def dashboard(request: Request, message: str = "", error: str = "",
-              new_key: str = ""):
+def dashboard(request: Request, message: str = "", error: str = "", new_key: str = ""):
     if not is_authenticated(request):
         return RedirectResponse("/login", status_code=302)
-
     keys = get_all_keys()
     stats = get_stats(keys)
-
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "keys": keys,
-        "message": message,
-        "error": error,
-        "new_key": new_key,
-        **stats
-    })
+    return templates.TemplateResponse(
+        request=request, name="dashboard.html",
+        context={"keys": keys, "message": message, "error": error,
+                 "new_key": new_key, **stats}
+    )
 
 
 @app.post("/dashboard/create", include_in_schema=False)
@@ -201,11 +197,11 @@ def dashboard_create(
     if expires_in_days <= 0 or activation_limit <= 0:
         keys = get_all_keys()
         stats = get_stats(keys)
-        return templates.TemplateResponse("dashboard.html", {
-            "request": request, "keys": keys,
-            "error": "Значения должны быть больше 0",
-            "open_form": True, "new_key": "", "message": "", **stats
-        })
+        return templates.TemplateResponse(
+            request=request, name="dashboard.html",
+            context={"keys": keys, "error": "Values must be > 0",
+                     "open_form": True, "new_key": "", "message": "", **stats}
+        )
 
     created_at = datetime.now(timezone.utc)
     expires_at = created_at + timedelta(days=expires_in_days)
@@ -227,21 +223,20 @@ def dashboard_create(
         except sqlite3.IntegrityError:
             continue
 
-    if not new_key:
-        keys = get_all_keys()
-        stats = get_stats(keys)
-        return templates.TemplateResponse("dashboard.html", {
-            "request": request, "keys": keys,
-            "error": "Не удалось создать ключ",
-            "new_key": "", "message": "", **stats
-        })
-
     keys = get_all_keys()
     stats = get_stats(keys)
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request, "keys": keys,
-        "new_key": new_key, "message": "", "error": "", **stats
-    })
+
+    if not new_key:
+        return templates.TemplateResponse(
+            request=request, name="dashboard.html",
+            context={"keys": keys, "error": "Failed to create key",
+                     "new_key": "", "message": "", **stats}
+        )
+
+    return templates.TemplateResponse(
+        request=request, name="dashboard.html",
+        context={"keys": keys, "new_key": new_key, "message": "", "error": "", **stats}
+    )
 
 
 @app.post("/dashboard/block", include_in_schema=False)
@@ -258,13 +253,14 @@ def dashboard_block(request: Request, license_key: str = Form(...)):
 
     keys = get_all_keys()
     stats = get_stats(keys)
-    msg = f"Ключ {license_key} заблокирован" if result.rowcount else "Ключ не найден"
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request, "keys": keys,
-        "message": msg if result.rowcount else "",
-        "error": "" if result.rowcount else msg,
-        "new_key": "", **stats
-    })
+    ok = result.rowcount > 0
+    return templates.TemplateResponse(
+        request=request, name="dashboard.html",
+        context={"keys": keys,
+                 "message": f"Key {license_key} blocked" if ok else "",
+                 "error": "" if ok else "Key not found",
+                 "new_key": "", **stats}
+    )
 
 
 # ══════════════════════════════════════════════
@@ -386,4 +382,3 @@ def block_key(body: VerifyRequest, authorization: str = Header(default=None)):
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Ключ не найден")
     return {"success": True, "license_key": key, "status": "blocked"}
-

@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 """
-License Server — бэкенд + веб-панель администратора.
+License Server - backend + web admin panel.
 FastAPI + SQLite + Jinja2.
 
-Запуск:
+Run:
     uvicorn main:app --reload
 """
 
@@ -31,7 +32,7 @@ _sessions: set = set()
 
 app = FastAPI(
     title="License Server",
-    description="Сервер лицензий с веб-панелью администратора.",
+    description="License server with admin panel.",
     version="1.2.0",
 )
 
@@ -88,7 +89,7 @@ def is_authenticated(request: Request) -> bool:
 
 
 def get_all_keys():
-    """Возвращает все ключи с вычисленным display_status."""
+    """Returns all keys with computed display_status."""
     now = datetime.now(timezone.utc)
     with get_db() as conn:
         rows = conn.execute(
@@ -98,7 +99,7 @@ def get_all_keys():
     keys = []
     for row in rows:
         d = dict(row)
-        # Вычисляем статус для отображения
+        # compute display status
         if d["status"] == "blocked":
             d["display_status"] = "blocked"
         elif datetime.fromisoformat(d["expires_at"]) < now:
@@ -294,7 +295,7 @@ def root():
 
 @app.post("/verify", response_model=VerifyResponse, tags=["Public"])
 def verify_license(body: VerifyRequest):
-    """✅ Публичный — проверяет лицензионный ключ."""
+    """Public endpoint - verifies license key."""
     key = body.license_key.strip().upper()
     with get_db() as conn:
         row = conn.execute(
@@ -328,7 +329,7 @@ def verify_license(body: VerifyRequest):
 
 @app.post("/create_key", response_model=CreateKeyResponse, tags=["Admin API"])
 def create_key(body: CreateKeyRequest, authorization: str = Header(default=None)):
-    """🔒 Header: Authorization: <пароль>"""
+    """Admin only. Header: Authorization: <password>"""
     require_admin(authorization)
     if body.expires_in_days <= 0 or body.activation_limit <= 0:
         raise HTTPException(status_code=400, detail="Значения должны быть > 0")
@@ -361,7 +362,7 @@ def create_key(body: CreateKeyRequest, authorization: str = Header(default=None)
 @app.get("/keys", tags=["Admin API"])
 def list_keys(limit: int = 50, offset: int = 0,
               authorization: str = Header(default=None)):
-    """🔒 Header: Authorization: <пароль>"""
+    """Admin only. Header: Authorization: <password>"""
     require_admin(authorization)
     with get_db() as conn:
         rows = conn.execute(
@@ -374,7 +375,7 @@ def list_keys(limit: int = 50, offset: int = 0,
 
 @app.post("/block_key", tags=["Admin API"])
 def block_key(body: VerifyRequest, authorization: str = Header(default=None)):
-    """🔒 Header: Authorization: <пароль>"""
+    """Admin only. Header: Authorization: <password>"""
     require_admin(authorization)
     key = body.license_key.strip().upper()
     with get_db() as conn:
@@ -385,3 +386,4 @@ def block_key(body: VerifyRequest, authorization: str = Header(default=None)):
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Ключ не найден")
     return {"success": True, "license_key": key, "status": "blocked"}
+

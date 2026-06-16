@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>License Server — Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f0f13;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  /* ── Navbar ── */
+  .navbar {
+    background: #1a1a24;
+    border-bottom: 1px solid #2d2d3d;
+    padding: 0 32px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .navbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .navbar-brand span { font-size: 22px; }
+
+  .navbar-actions { display: flex; gap: 12px; align-items: center; }
+
+  .badge-count {
+    background: #6366f1;
+    color: #fff;
+    border-radius: 20px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .btn-logout {
+    padding: 7px 16px;
+    background: transparent;
+    border: 1px solid #3d3d50;
+    border-radius: 8px;
+    color: #94a3b8;
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s;
+  }
+  .btn-logout:hover { border-color: #ef4444; color: #ef4444; }
+
+  /* ── Main ── */
+  .main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+  /* ── Stats ── */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .stat-card {
+    background: #1a1a24;
+    border: 1px solid #2d2d3d;
+    border-radius: 12px;
+    padding: 20px 24px;
+  }
+
+  .stat-label {
+    font-size: 12px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .stat-value.green { color: #4ade80; }
+  .stat-value.red   { color: #f87171; }
+  .stat-value.blue  { color: #818cf8; }
+
+  /* ── Panel ── */
+  .panel {
+    background: #1a1a24;
+    border: 1px solid #2d2d3d;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #2d2d3d;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .panel-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  /* ── Кнопка создать ── */
+  .btn-create {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 18px;
+    background: #6366f1;
+    color: #fff;
+    border: none;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+  }
+  .btn-create:hover { background: #4f46e5; }
+  .btn-create:active { transform: scale(0.97); }
+
+  /* ── Форма создания ── */
+  .create-form {
+    padding: 20px 24px;
+    border-bottom: 1px solid #2d2d3d;
+    background: #13131c;
+    display: none;
+  }
+  .create-form.open { display: block; }
+
+  .create-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 12px;
+    align-items: end;
+  }
+
+  .form-group label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: #94a3b8;
+    margin-bottom: 6px;
+    letter-spacing: 0.3px;
+  }
+
+  .form-group input {
+    width: 100%;
+    padding: 10px 14px;
+    background: #1a1a24;
+    border: 1px solid #2d2d3d;
+    border-radius: 8px;
+    color: #e2e8f0;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .form-group input:focus { border-color: #6366f1; }
+
+  .btn-submit {
+    padding: 10px 20px;
+    background: #4ade80;
+    color: #0f1710;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s;
+  }
+  .btn-submit:hover { background: #22c55e; }
+
+  /* ── Таблица ── */
+  .table-wrap { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead th {
+    padding: 12px 20px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    border-bottom: 1px solid #2d2d3d;
+    background: #13131c;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid #1e1e2a;
+    transition: background 0.15s;
+  }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #1e1e2a; }
+
+  td {
+    padding: 14px 20px;
+    color: #cbd5e1;
+    vertical-align: middle;
+  }
+
+  .key-code {
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    color: #a5b4fc;
+    letter-spacing: 0.5px;
+  }
+
+  /* ── Статус badge ── */
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; }
+  .status.active  { background: rgba(74,222,128,0.1); color: #4ade80; }
+  .status.active::before  { background: #4ade80; }
+  .status.blocked { background: rgba(248,113,113,0.1); color: #f87171; }
+  .status.blocked::before { background: #f87171; }
+  .status.expired { background: rgba(251,191,36,0.1); color: #fbbf24; }
+  .status.expired::before { background: #fbbf24; }
+
+  /* ── Кнопка заблокировать ── */
+  .btn-block {
+    padding: 5px 12px;
+    background: transparent;
+    border: 1px solid rgba(248,113,113,0.4);
+    color: #f87171;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn-block:hover { background: rgba(248,113,113,0.1); border-color: #f87171; }
+  .btn-block:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Флеш сообщение ── */
+  .flash {
+    padding: 14px 20px;
+    border-radius: 10px;
+    margin-bottom: 24px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .flash.success {
+    background: rgba(74,222,128,0.1);
+    border: 1px solid rgba(74,222,128,0.3);
+    color: #4ade80;
+  }
+  .flash.error {
+    background: rgba(248,113,113,0.1);
+    border: 1px solid rgba(248,113,113,0.3);
+    color: #f87171;
+  }
+
+  /* ── Новый ключ highlight ── */
+  .new-key-banner {
+    padding: 16px 24px;
+    background: rgba(99,102,241,0.08);
+    border-bottom: 1px solid rgba(99,102,241,0.2);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    color: #a5b4fc;
+  }
+  .new-key-value {
+    font-family: monospace;
+    font-size: 16px;
+    font-weight: 700;
+    color: #818cf8;
+    background: rgba(99,102,241,0.1);
+    padding: 4px 12px;
+    border-radius: 6px;
+    border: 1px solid rgba(99,102,241,0.3);
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .new-key-value:hover { background: rgba(99,102,241,0.2); }
+
+  .empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: #4a4a60;
+    font-size: 14px;
+  }
+  .empty-icon { font-size: 40px; display: block; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar">
+  <div class="navbar-brand">
+    <span>🔐</span>
+    License Server
+    <span class="badge-count">{{ total }} ключей</span>
+  </div>
+  <div class="navbar-actions">
+    <a href="/logout" class="btn-logout">Выйти</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<div class="main">
+
+  <!-- Flash messages -->
+  {% if message %}
+  <div class="flash success">✅ {{ message }}</div>
+  {% endif %}
+  {% if error %}
+  <div class="flash error">❌ {{ error }}</div>
+  {% endif %}
+
+  <!-- Новый ключ -->
+  {% if new_key %}
+  <div class="flash success" style="flex-direction:column; align-items:flex-start; gap:8px;">
+    <div>✅ Новый ключ создан — скопируй его сейчас</div>
+    <div class="new-key-value" onclick="navigator.clipboard.writeText('{{ new_key }}'); this.textContent='Скопировано!'">
+      {{ new_key }}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Всего ключей</div>
+      <div class="stat-value blue">{{ total }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Активных</div>
+      <div class="stat-value green">{{ active_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Заблокировано</div>
+      <div class="stat-value red">{{ blocked_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Истекло</div>
+      <div class="stat-value" style="color:#fbbf24">{{ expired_count }}</div>
+    </div>
+  </div>
+
+  <!-- Таблица ключей -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Лицензионные ключи</span>
+      <button class="btn-create" onclick="toggleForm()">+ Создать ключ</button>
+    </div>
+
+    <!-- Форма создания -->
+    <div class="create-form" id="createForm">
+      <form method="post" action="/dashboard/create">
+        <div class="create-form-grid">
+          <div class="form-group">
+            <label>Срок действия (дней)</label>
+            <input type="number" name="expires_in_days" value="365" min="1" max="3650">
+          </div>
+          <div class="form-group">
+            <label>Лимит активаций</label>
+            <input type="number" name="activation_limit" value="1" min="1" max="100">
+          </div>
+          <button type="submit" class="btn-submit">Создать</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Таблица -->
+    <div class="table-wrap">
+      {% if keys %}
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Лицензионный ключ</th>
+            <th>Статус</th>
+            <th>Активации</th>
+            <th>Создан</th>
+            <th>Истекает</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for key in keys %}
+          <tr>
+            <td style="color:#4a4a60">{{ key.id }}</td>
+            <td><span class="key-code">{{ key.license_key }}</span></td>
+            <td>
+              <span class="status {{ key.display_status }}">
+                {% if key.display_status == 'active' %}Активен
+                {% elif key.display_status == 'blocked' %}Заблокирован
+                {% else %}Истёк{% endif %}
+              </span>
+            </td>
+            <td style="color:#94a3b8">{{ key.activation_count }} / {{ key.activation_limit }}</td>
+            <td style="color:#64748b">{{ key.created_at[:10] }}</td>
+            <td style="color:{% if key.display_status == 'expired' %}#fbbf24{% else %}#64748b{% endif %}">
+              {{ key.expires_at[:10] }}
+            </td>
+            <td>
+              {% if key.status != 'blocked' %}
+              <form method="post" action="/dashboard/block" style="display:inline"
+                    onsubmit="return confirm('Заблокировать ключ {{ key.license_key }}?')">
+                <input type="hidden" name="license_key" value="{{ key.license_key }}">
+                <button type="submit" class="btn-block">Заблокировать</button>
+              </form>
+              {% else %}
+              <button class="btn-block" disabled>Заблокирован</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="empty">
+        <span class="empty-icon">🗝️</span>
+        Ключей пока нет. Создайте первый!
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<script>
+function toggleForm() {
+  const f = document.getElementById('createForm');
+  f.classList.toggle('open');
+}
+
+// Автоматически открыть форму если есть ошибка создания
+{% if open_form %}
+document.getElementById('createForm').classList.add('open');
+{% endif %}
+</script>
+</body>
+</html>

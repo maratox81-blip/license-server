@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """
 License Server - backend + web admin panel.
-FastAPI + SQLite + Jinja2.
+FastAPI + SQLite / PostgreSQL + Jinja2.
 
-Run:
+Local dev:  uvicorn main:app --reload            (uses SQLite)
+Production: set DATABASE_URL env var             (uses PostgreSQL)
+
+Run locally:
     uvicorn main:app --reload
 """
 
 import os
 import sqlite3
 import secrets
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Header, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,7 +26,8 @@ from pydantic import BaseModel
 # ──────────────────────────────────────────────
 # Конфигурация
 # ──────────────────────────────────────────────
-DB_PATH = Path(__file__).parent / "licenses.db"
+DATABASE_URL = os.environ.get("DATABASE_URL", "")          # set on Render
+DB_PATH = Path(__file__).parent / "licenses.db"            # local SQLite fallback
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Fallback: if running from /opt/render/project/src
@@ -37,36 +43,116 @@ _sessions: set = set()
 app = FastAPI(
     title="License Server",
     description="License server with admin panel.",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-
 # ──────────────────────────────────────────────
-# База данных
+# Абстракция БД: PostgreSQL или SQLite
 # ──────────────────────────────────────────────
 
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+_USE_PG = bool(DATABASE_URL)
+
+if _USE_PG:
+    import psycopg2
+    import psycopg2.extras
+
+    # Render выдаёт URL вида postgres://... — psycopg2 требует postgresql://
+    _PG_DSN = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+    @contextmanager
+    def get_db():
+        conn = psycopg2.connect(_PG_DSN)
+        conn.autocommit = False
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _fetchall(cursor) -> list[dict]:
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def _fetchone(cursor) -> dict | None:
+        cols = [d[0] for d in cursor.description]
+        row = cursor.fetchone()
+        return dict(zip(cols, row)) if row else None
+
+    # PostgreSQL использует %s вместо ?
+    _PH = "%s"
+
+else:
+    @contextmanager
+    def get_db():
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _fetchall(cursor) -> list[dict]:
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _fetchone(cursor) -> dict | None:
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    _PH = "?"
+
+
+def _q(sql: str) -> str:
+    """Replace ? placeholders for the active backend."""
+    if _USE_PG:
+        return sql.replace("?", "%s")
+    return sql
 
 
 def init_db():
     with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS licenses (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                license_key      TEXT    NOT NULL UNIQUE,
-                status           TEXT    NOT NULL DEFAULT 'active',
-                created_at       TEXT    NOT NULL,
-                expires_at       TEXT    NOT NULL,
-                activation_count INTEGER NOT NULL DEFAULT 0,
-                activation_limit INTEGER NOT NULL DEFAULT 1
-            )
-        """)
-        conn.commit()
+        cur = conn.cursor()
+        if _USE_PG:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS licenses (
+                    id               SERIAL PRIMARY KEY,
+                    license_key      TEXT    NOT NULL UNIQUE,
+                    status           TEXT    NOT NULL DEFAULT 'active',
+                    created_at       TEXT    NOT NULL,
+                    expires_at       TEXT    NOT NULL,
+                    activation_count INTEGER NOT NULL DEFAULT 0,
+                    activation_limit INTEGER NOT NULL DEFAULT 1,
+                    activated_devices TEXT   NOT NULL DEFAULT ''
+                )
+            """)
+        else:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS licenses (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    license_key      TEXT    NOT NULL UNIQUE,
+                    status           TEXT    NOT NULL DEFAULT 'active',
+                    created_at       TEXT    NOT NULL,
+                    expires_at       TEXT    NOT NULL,
+                    activation_count INTEGER NOT NULL DEFAULT 0,
+                    activation_limit INTEGER NOT NULL DEFAULT 1,
+                    activated_devices TEXT   NOT NULL DEFAULT ''
+                )
+            """)
+            # SQLite migration: add activated_devices column if missing
+            try:
+                cur.execute(
+                    "ALTER TABLE licenses ADD COLUMN activated_devices TEXT NOT NULL DEFAULT ''"
+                )
+            except Exception:
+                pass  # already exists
 
 
 init_db()
@@ -96,14 +182,12 @@ def get_all_keys():
     """Returns all keys with computed display_status."""
     now = datetime.now(timezone.utc)
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM licenses ORDER BY created_at DESC"
-        ).fetchall()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM licenses ORDER BY created_at DESC")
+        rows = _fetchall(cur)
 
     keys = []
-    for row in rows:
-        d = dict(row)
-        # compute display status
+    for d in rows:
         if d["status"] == "blocked":
             d["display_status"] = "blocked"
         elif datetime.fromisoformat(d["expires_at"]) < now:
@@ -211,16 +295,16 @@ def dashboard_create(
         key = generate_license_key()
         try:
             with get_db() as conn:
-                conn.execute(
-                    """INSERT INTO licenses
+                cur = conn.cursor()
+                cur.execute(
+                    _q("""INSERT INTO licenses
                        (license_key, status, created_at, expires_at, activation_count, activation_limit)
-                       VALUES (?, 'active', ?, ?, 0, ?)""",
+                       VALUES (?, 'active', ?, ?, 0, ?)"""),
                     (key, created_at.isoformat(), expires_at.isoformat(), activation_limit)
                 )
-                conn.commit()
             new_key = key
             break
-        except sqlite3.IntegrityError:
+        except Exception:
             continue
 
     keys = get_all_keys()
@@ -245,15 +329,16 @@ def dashboard_block(request: Request, license_key: str = Form(...)):
         return RedirectResponse("/login", status_code=302)
 
     with get_db() as conn:
-        result = conn.execute(
-            "UPDATE licenses SET status = 'blocked' WHERE license_key = ?",
+        cur = conn.cursor()
+        cur.execute(
+            _q("UPDATE licenses SET status = 'blocked' WHERE license_key = ?"),
             (license_key,)
         )
-        conn.commit()
+        rowcount = cur.rowcount
 
     keys = get_all_keys()
     stats = get_stats(keys)
-    ok = result.rowcount > 0
+    ok = rowcount > 0
     return templates.TemplateResponse(
         request=request, name="dashboard.html",
         context={"keys": keys,
@@ -269,10 +354,12 @@ def dashboard_block(request: Request, license_key: str = Form(...)):
 
 class VerifyRequest(BaseModel):
     license_key: str
+    device_id: str | None = None
 
 class VerifyResponse(BaseModel):
     valid: bool
     reason: str | None = None
+    expires_at: str | None = None
 
 class CreateKeyRequest(BaseModel):
     expires_in_days: int = 365
@@ -293,10 +380,12 @@ def root():
 def verify_license(body: VerifyRequest):
     """Public endpoint - verifies license key."""
     key = body.license_key.strip().upper()
+    device_id = (body.device_id or "").strip()
+
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM licenses WHERE license_key = ?", (key,)
-        ).fetchone()
+        cur = conn.cursor()
+        cur.execute(_q("SELECT * FROM licenses WHERE license_key = ?"), (key,))
+        row = _fetchone(cur)
 
     if row is None:
         return VerifyResponse(valid=False, reason="Лицензионный ключ не найден")
@@ -307,20 +396,37 @@ def verify_license(body: VerifyRequest):
     if datetime.now(timezone.utc) > expires_at:
         return VerifyResponse(valid=False, reason="Срок действия лицензии истёк")
 
-    if row["activation_count"] >= row["activation_limit"]:
-        return VerifyResponse(
-            valid=False,
-            reason=f"Превышен лимит активаций ({row['activation_limit']})"
-        )
+    # Parse the list of already-activated devices
+    activated_raw = row["activated_devices"] or ""
+    activated = [d for d in activated_raw.split(",") if d]
 
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE licenses SET activation_count = activation_count + 1 WHERE license_key = ?",
-            (key,)
-        )
-        conn.commit()
+    already_activated = device_id and device_id in activated
 
-    return VerifyResponse(valid=True)
+    if not already_activated:
+        # New device — check activation limit
+        if row["activation_count"] >= row["activation_limit"]:
+            return VerifyResponse(
+                valid=False,
+                reason=f"Превышен лимит активаций ({row['activation_limit']})"
+            )
+        # Register this device
+        if device_id:
+            activated.append(device_id)
+            new_devices = ",".join(activated)
+        else:
+            new_devices = activated_raw
+
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                _q("""UPDATE licenses
+                   SET activation_count = activation_count + 1,
+                       activated_devices = ?
+                   WHERE license_key = ?"""),
+                (new_devices, key)
+            )
+
+    return VerifyResponse(valid=True, expires_at=row["expires_at"])
 
 
 @app.post("/create_key", response_model=CreateKeyResponse, tags=["Admin API"])
@@ -337,19 +443,19 @@ def create_key(body: CreateKeyRequest, authorization: str = Header(default=None)
         key = generate_license_key()
         try:
             with get_db() as conn:
-                conn.execute(
-                    """INSERT INTO licenses
+                cur = conn.cursor()
+                cur.execute(
+                    _q("""INSERT INTO licenses
                        (license_key, status, created_at, expires_at, activation_count, activation_limit)
-                       VALUES (?, 'active', ?, ?, 0, ?)""",
+                       VALUES (?, 'active', ?, ?, 0, ?)"""),
                     (key, created_at.isoformat(), expires_at.isoformat(), body.activation_limit)
                 )
-                conn.commit()
             return CreateKeyResponse(
                 license_key=key,
                 expires_at=expires_at.isoformat(),
                 activation_limit=body.activation_limit,
             )
-        except sqlite3.IntegrityError:
+        except Exception:
             continue
 
     raise HTTPException(status_code=500, detail="Не удалось создать ключ")
@@ -361,12 +467,15 @@ def list_keys(limit: int = 50, offset: int = 0,
     """Admin only. Header: Authorization: <password>"""
     require_admin(authorization)
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM licenses ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        cur = conn.cursor()
+        cur.execute(
+            _q("SELECT * FROM licenses ORDER BY created_at DESC LIMIT ? OFFSET ?"),
             (limit, offset)
-        ).fetchall()
-        total = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
-    return {"total": total, "keys": [dict(r) for r in rows]}
+        )
+        rows = _fetchall(cur)
+        cur.execute("SELECT COUNT(*) FROM licenses")
+        total = cur.fetchone()[0]
+    return {"total": total, "keys": rows}
 
 
 @app.post("/block_key", tags=["Admin API"])
@@ -375,10 +484,10 @@ def block_key(body: VerifyRequest, authorization: str = Header(default=None)):
     require_admin(authorization)
     key = body.license_key.strip().upper()
     with get_db() as conn:
-        result = conn.execute(
-            "UPDATE licenses SET status = 'blocked' WHERE license_key = ?", (key,)
+        cur = conn.cursor()
+        cur.execute(
+            _q("UPDATE licenses SET status = 'blocked' WHERE license_key = ?"), (key,)
         )
-        conn.commit()
-        if result.rowcount == 0:
+        if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Ключ не найден")
     return {"success": True, "license_key": key, "status": "blocked"}

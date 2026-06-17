@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 License Server - backend + web admin panel.
-FastAPI + SQLite / PostgreSQL + Jinja2.
-
-Local dev:  uvicorn main:app --reload            (uses SQLite)
-Production: set DATABASE_URL env var             (uses PostgreSQL)
+FastAPI + SQLite + Jinja2.
 
 Run locally:
     uvicorn main:app --reload
+
+On Render: mount a Disk at /data, set DB_FILE=/data/licenses.db
 """
 
 import os
@@ -16,7 +15,6 @@ import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, HTTPException, Header, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -26,18 +24,17 @@ from pydantic import BaseModel
 # ──────────────────────────────────────────────
 # Конфигурация
 # ──────────────────────────────────────────────
-DATABASE_URL = os.environ.get("DATABASE_URL", "")          # set on Render
-DB_PATH = Path(__file__).parent / "licenses.db"            # local SQLite fallback
-TEMPLATES_DIR = Path(__file__).parent / "templates"
+# На Render: смонтируй Disk на /data и задай DB_FILE=/data/licenses.db
+# Локально: база хранится рядом со скриптом
+_default_db = Path(__file__).parent / "licenses.db"
+DB_PATH = Path(os.environ.get("DB_FILE", str(_default_db)))
 
-# Fallback: if running from /opt/render/project/src
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 if not TEMPLATES_DIR.exists():
     TEMPLATES_DIR = Path("/opt/render/project/src/templates")
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "changeme")
 
-# Простые сессии: token → True (хранятся в памяти сервера)
-# При рестарте сервера сессии сбрасываются — это нормально
 _sessions: set = set()
 
 app = FastAPI(
@@ -48,111 +45,59 @@ app = FastAPI(
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+
 # ──────────────────────────────────────────────
-# Абстракция БД: PostgreSQL или SQLite
+# База данных (SQLite)
 # ──────────────────────────────────────────────
 
-_USE_PG = bool(DATABASE_URL)
+@contextmanager
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
-if _USE_PG:
-    import psycopg2
-    import psycopg2.extras
 
-    # Render выдаёт URL вида postgres://... — psycopg2 требует postgresql://
-    _PG_DSN = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+def _fetchall(cursor) -> list[dict]:
+    return [dict(row) for row in cursor.fetchall()]
 
-    @contextmanager
-    def get_db():
-        conn = psycopg2.connect(_PG_DSN)
-        conn.autocommit = False
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
-    def _fetchall(cursor) -> list[dict]:
-        cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-    def _fetchone(cursor) -> dict | None:
-        cols = [d[0] for d in cursor.description]
-        row = cursor.fetchone()
-        return dict(zip(cols, row)) if row else None
-
-    # PostgreSQL использует %s вместо ?
-    _PH = "%s"
-
-else:
-    @contextmanager
-    def get_db():
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def _fetchall(cursor) -> list[dict]:
-        return [dict(row) for row in cursor.fetchall()]
-
-    def _fetchone(cursor) -> dict | None:
-        row = cursor.fetchone()
-        return dict(row) if row else None
-
-    _PH = "?"
+def _fetchone(cursor) -> dict | None:
+    row = cursor.fetchone()
+    return dict(row) if row else None
 
 
 def _q(sql: str) -> str:
-    """Replace ? placeholders for the active backend."""
-    if _USE_PG:
-        return sql.replace("?", "%s")
     return sql
 
 
 def init_db():
     with get_db() as conn:
         cur = conn.cursor()
-        if _USE_PG:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS licenses (
-                    id               SERIAL PRIMARY KEY,
-                    license_key      TEXT    NOT NULL UNIQUE,
-                    status           TEXT    NOT NULL DEFAULT 'active',
-                    created_at       TEXT    NOT NULL,
-                    expires_at       TEXT    NOT NULL,
-                    activation_count INTEGER NOT NULL DEFAULT 0,
-                    activation_limit INTEGER NOT NULL DEFAULT 1,
-                    activated_devices TEXT   NOT NULL DEFAULT ''
-                )
-            """)
-        else:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS licenses (
-                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                    license_key      TEXT    NOT NULL UNIQUE,
-                    status           TEXT    NOT NULL DEFAULT 'active',
-                    created_at       TEXT    NOT NULL,
-                    expires_at       TEXT    NOT NULL,
-                    activation_count INTEGER NOT NULL DEFAULT 0,
-                    activation_limit INTEGER NOT NULL DEFAULT 1,
-                    activated_devices TEXT   NOT NULL DEFAULT ''
-                )
-            """)
-            # SQLite migration: add activated_devices column if missing
-            try:
-                cur.execute(
-                    "ALTER TABLE licenses ADD COLUMN activated_devices TEXT NOT NULL DEFAULT ''"
-                )
-            except Exception:
-                pass  # already exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS licenses (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key      TEXT    NOT NULL UNIQUE,
+                status           TEXT    NOT NULL DEFAULT 'active',
+                created_at       TEXT    NOT NULL,
+                expires_at       TEXT    NOT NULL,
+                activation_count INTEGER NOT NULL DEFAULT 0,
+                activation_limit INTEGER NOT NULL DEFAULT 1,
+                activated_devices TEXT   NOT NULL DEFAULT ''
+            )
+        """)
+        try:
+            cur.execute(
+                "ALTER TABLE licenses ADD COLUMN activated_devices TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass
 
 
 init_db()
